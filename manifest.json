@@ -3,7 +3,7 @@
   "name": "Alt Quick Keys",
   "version": "1.5.3",
   "minAppVersion": "1.4.0",
-  "description": "Alt+Q/W/E 插入符号；Alt+K/L/O/P 跳行；Alt+,/Alt+. 逐字扩选；Alt+M 链接模板；Alt+Enter 在光标行后插空行；Alt+D 清行；Alt+-/Alt+= 后退前进；Tab 跳出 ) 和引号；悬停双链轻按 Alt 直接跳转。",
+  "description": "Alt-key shortcuts to insert markup, jump between lines, extend the selection character by character, fill in wikilinks with Tab, and go back or forward without losing the scroll position.",
   "author": "AgentProjects",
   "isDesktopOnly": true
 }
