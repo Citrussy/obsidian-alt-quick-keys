@@ -1,9 +1,10 @@
 {
   "id": "alt-quick-keys",
   "name": "Alt Quick Keys",
-  "version": "1.5.3",
+  "version": "1.5.4",
   "minAppVersion": "1.4.0",
   "description": "Alt-key shortcuts to insert markup, jump between lines, extend the selection character by character, fill in wikilinks with Tab, and go back or forward without losing the scroll position.",
-  "author": "AgentProjects",
+  "author": "Citrussy",
+  "authorUrl": "https://github.com/Citrussy",
   "isDesktopOnly": true
 }

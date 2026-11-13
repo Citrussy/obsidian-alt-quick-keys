@@ -2,6 +2,8 @@
 
 Alt-based editing shortcuts for [Obsidian](https://obsidian.md). Insert markup, jump between lines, extend a selection one character at a time, fill in a wikilink with Tab, clear a line without fighting the IME, and go back or forward without losing your scroll position.
 
+**[中文说明](#中文说明)**
+
 Every shortcut works on multiple cursors where it makes sense. Nothing here touches your notes unless you press a key.
 
 ## Requirements
@@ -84,6 +86,18 @@ When the caret sits just before a `)`, the Tab key steps over it. The same goes 
 
 Hover a wikilink and press Alt by itself. The plugin opens the link, in Live Preview and in Reading view. It checks the DOM first to be sure the pointer is really over the link, then resolves the target. Unresolved links are skipped. Anything else pressed while Alt is down counts as a shortcut and cancels the jump. A 350 ms hold also fires, in case the system menu swallows the key release.
 
+## How it works
+
+The plugin is one hand-written CommonJS file with no build step, and most of its design comes from three constraints.
+
+**Keys must be caught before CodeMirror sees them.** `Alt+M`, `Alt+Enter`, `Alt+D`, the Alt-tap and the Tab behaviours are handled on `window`'s `keydown` in the capture phase, using native listeners rather than `registerDomEvent`. On some Obsidian versions `registerDomEvent` cannot request capture, and then CodeMirror's own Tab handler consumes the key first. Everything that can be a normal editor command — the jumps, the inserts, back and forward — is registered as a command with a default hotkey, so it shows up in Settings → Hotkeys and works with multiple cursors.
+
+**Editor changes go through the editor, not the DOM.** `insertSymbol` calls `editor.replaceSelection` for one caret; for several carets it walks the ranges backwards with `replaceRange` and re-applies each cursor offset, because replacing forwards shifts the positions of the ranges still to be edited. `editor.transaction` exists, but on the versions this plugin targets it does not commit the change synchronously, which breaks the "insert at every caret" sequence. The link template is a small state machine over the link's *current* text rather than a step counter, because the candidate suggester can replace `[[` with a complete `[[Note|Alias]]` in one keystroke; counting steps would then point at the wrong segment.
+
+**IME text is not your text.** `Alt+D` while composing must clear the composition, not the line. The plugin records the composing text from `compositionstart`/`compositionupdate`, blurs the editor to commit or cancel the composition, polls up to six times at 45 ms, and only then removes the characters if the text immediately before the caret still equals what the IME was composing. The check is the point: blind deletion during composition is how plugins eat paragraphs.
+
+The scroll restore for back and forward is a small `Map` from file path to `scrollTop`, captured from the editor's `.cm-scroller` (or `markdown-preview-view` in reading mode) before the navigation command runs and re-applied at 80 ms and 260 ms afterwards, since Obsidian's own restore can land after the first attempt.
+
 ## Hotkeys
 
 The shortcuts above are registered as Obsidian commands, so every one of them can be changed in Settings → Hotkeys. Search for `Alt Quick Keys`.
@@ -101,6 +115,7 @@ The shortcuts above are registered as Obsidian commands, so every one of them ca
 ```
 main.js        compiled plugin (plain CommonJS, no bundler)
 manifest.json  plugin manifest
+versions.json  minimum Obsidian version per release
 LICENSE        MIT
 ```
 
@@ -108,9 +123,58 @@ There is no build step. `main.js` is hand-written, readable source. The pure hel
 
 ## 中文说明
 
-Obsidian 桌面端的 Alt 键速写插件。Alt+Q/W/E 插符号；Alt+K/L/O/P 跳行（按住连跳，末行按 Enter 逻辑补行）；Alt+, / Alt+. 逐字扩选；Alt+M 插 `[[]]` 模板，Tab 依次补标题、别名、再跳出；Alt+Enter 在光标行后插空行；Alt+D 两段式清行，输入法未上屏时先清输入法；Alt+- / Alt+= 后退前进并还原滚动位置；Tab 越过 `)` 和成对引号；鼠标悬停双链时轻按 Alt 直接跳转。
+Obsidian 桌面端的 Alt 键速写插件。给常用的 Markdown 符号、行跳转、扩选、双链模板各配一个 Alt 组合键，把「移动鼠标 → 定位 → 打字」压成一次按键。
 
-所有键位的命令都在「设置 → 快捷键」里可改。仅桌面端，需要 Obsidian 1.4.0 以上。
+### 能带来什么
+
+- **手不离主键区**：插 `#`、`*`、`**`，上一行 / 下一行的行首行尾，全部在 Alt 层完成。
+- **按住连跳**：`Alt+K` / `Alt+L` 支持按住不放连续跳行，跨十几行不用连按十几次。
+- **多光标一起改**：插入符号和逐字扩选对所有光标生效，写列表、改表格时不用逐个处理。
+- **双链不用记语法**：`Alt+M` 生成 `[[]]`，Tab 依次补标题、别名，再跳出。选中文字再按，选中的文字直接变成别名。
+- **清行不误删**：`Alt+D` 第一次清空当前行，第二次才删行；输入法正在组字时先清输入法，不会把正文吃掉。
+- **后退不丢位置**：`Alt+-` / `Alt+=` 后退前进之后回到原来的滚动位置，长笔记里不会被打回开头。
+- **轻按 Alt 开链接**：鼠标悬停在双链上，轻按一下 Alt 直接打开，实时预览和阅读模式都可用。
+
+### 按键
+
+| 按键 | 作用 |
+| --- | --- |
+| `Alt+Q` | 插入 `#` |
+| `Alt+W` | 插入 `*` |
+| `Alt+E` | 插入 `**` |
+| `Alt+K` | 下一行行首 |
+| `Alt+L` | 下一行行尾 |
+| `Alt+O` | 上一行行首 |
+| `Alt+P` | 上一行行尾 |
+| `Alt+,` | 选区向右扩一个字 |
+| `Alt+.` | 选区向右扩一个字 |
+| `Alt+M` | 插入双链模板，Tab 逐步补全 |
+| `Alt+Enter` | 在下方插入空行，光标回行首 |
+| `Alt+D` | 清空当前行；已空则删除该行 |
+| `Alt+-` | 后退，保留滚动位置 |
+| `Alt+=` | 前进，保留滚动位置 |
+| `Tab` | 越过右括号或成对引号 |
+| `Alt`（轻按） | 打开鼠标下的双链 |
+
+### 实现原理
+
+整个插件是一个手写的 CommonJS 文件，没有构建步骤。设计基本由三个限制决定。
+
+**按键必须先于 CodeMirror 被捕获。** `Alt+M`、`Alt+Enter`、`Alt+D`、轻按 Alt、以及 Tab 相关行为都挂在 `window` 的 `keydown` 捕获阶段，用原生监听器而不是 `registerDomEvent`——部分 Obsidian 版本里 `registerDomEvent` 拿不到捕获阶段，Tab 会先被 CodeMirror 吃掉。其余能做成普通命令的键位（跳行、插符号、前进后退）都注册为命令并带默认热键，这样能在「设置 → 快捷键」里改，也天然支持多光标。
+
+**改动通过编辑器 API，不碰 DOM。** 单光标插符号用 `editor.replaceSelection`；多光标则从后往前逐个 `replaceRange` 并修正光标偏移，因为从前往后改会让后面还没处理的区间位置整体漂移。`editor.transaction` 在这个插件支持的版本上不能同步提交，会破坏「每个光标都插入」的顺序，所以没用。双链模板是一个读取链接**当前文本**的小状态机，而不是按 Tab 次数计数：候选补全可能一次按键就把 `[[` 换成完整的 `[[Note|Alias]]`，按步数走会落到错误的分段。
+
+**输入法里的字不是你的字。** 组字过程中按 `Alt+D` 要清掉的是输入法内容，不是整行。插件从 `compositionstart`/`compositionupdate` 记录正在组字的文本，先让编辑器失焦提交或取消组字，再以 45 ms 间隔轮询最多六次，只有光标前文本仍然等于输入法内容时才删除。这个校验是关键：组字期间盲删是插件吃掉整段正文的常见原因。
+
+前进后退的滚动还原是一张「文件路径 → `scrollTop`」的 `Map`。导航命令执行前从编辑器的 `.cm-scroller`（阅读模式下是 `markdown-preview-view`）读位置，命令后 80 ms 和 260 ms 各还原一次，因为 Obsidian 自己的还原可能晚于第一次尝试。
+
+### 热键
+
+上表的键位都注册成了 Obsidian 命令，可在「设置 → 快捷键」里搜索 `Alt Quick Keys` 修改。`Alt+M`、`Alt+Enter`、`Alt+D`、轻按 Alt 和 Tab 行为直接走 `keydown`，不能改键，因为它们必须抢在 Obsidian 或输入法处理同一个键之前。
+
+### 运维说明
+
+只有 Markdown 编辑器获得焦点时生效；轻按 Alt 需要面板有焦点，侧边栏里不起作用。没有设置页、没有数据文件、不联网，滚动位置只存在内存里。仅桌面端，需要 Obsidian 1.4.0 以上。
 
 ## License
 
