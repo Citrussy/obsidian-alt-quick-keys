@@ -1,6 +1,6 @@
 # Alt Quick Keys
 
-Alt-based editing shortcuts for [Obsidian](https://obsidian.md). Insert markup, jump between lines, extend a selection one character at a time, fill in a wikilink with Tab, clear a line without fighting the IME, and go back or forward without losing your scroll position.
+Alt-based editing shortcuts for [Obsidian](https://obsidian.md). Insert markup, jump between lines, extend or split a selection, align lines into columns, fill in a wikilink with Tab, move whole lines, clear a line without fighting the IME, and go back or forward without losing your scroll position.
 
 **[中文说明](#中文说明)**
 
@@ -32,6 +32,13 @@ Every shortcut works on multiple cursors where it makes sense. Nothing here touc
 | `Alt+P` | Go to the end of the line above |
 | `Alt+,` | Extend the selection one character left |
 | `Alt+.` | Extend the selection one character right |
+| `Alt+T` | Align the selected lines into columns |
+| `Alt` + drag | Add the dragged text to the selection |
+| `Shift` + drag | Subtract the dragged text from the selection |
+| `Alt` + double-tap `<` | Select from the caret to the end of the document |
+| `Alt` + double-tap `>` | Select from the caret to the end of the line |
+| `Alt` (double tap) | Select the current line, or swap it with the caret line |
+| `Alt+S` | Cut the picked line and insert it below the caret line |
 | `Alt+M` | Insert a wikilink template, then Tab through it |
 | `Alt+Enter` | Insert a blank line below, caret at column 0 |
 | `Alt+D` | Clear the current line, or delete it if it is already empty |
@@ -52,6 +59,22 @@ Every shortcut works on multiple cursors where it makes sense. Nothing here touc
 ### Extend selection
 
 `Alt+,` and `Alt+.` move the active end of the selection one character, like dragging the mouse. The anchor stays put, so both directions work from the same start. Both stop at the line edge instead of wrapping. Emoji and other surrogate pairs count as one character.
+
+### Align columns
+
+`Alt+T` takes the main selection, splits it into lines, splits every line into tokens on runs of spaces or tabs, and pads each token so the next column starts at the same place. Widths are measured in display cells: CJK and full-width characters count 2, combining marks 0, a tab 4. Leading indentation is kept, empty lines come back exactly as they were, and the last column on a line gets no trailing spaces. A line with fewer tokens is padded only for the columns it has. The block is replaced in one transaction, so one undo restores the original text.
+
+### Add and subtract ranges
+
+Hold Alt while dragging to add the boxed text to the selection: ranges that touch or overlap are merged, separate ones stay separate, and the editor draws every range with its native highlight. Hold Shift while dragging to cut the boxed text out of the selection; a cut through the middle of a range splits it into two. Shift+drag is left to Obsidian when nothing is selected yet, so it still extends a selection normally.
+
+### Angle selects
+
+With Alt held, double-tap `<` to select from the caret to the end of the last line, or `>` to select to the end of the current line (Shift+End). The first press of the pair is swallowed, so no `<` or `>` lands in the note. A double-tap means two presses of the same key within 400 ms.
+
+### Line pick and move
+
+Tap Alt twice to select the line the caret is on. With that line still selected, move the caret to another line and tap Alt twice again: the two lines swap, and the selection follows the moved line. `Alt+S` instead cuts the picked line — or every line touched by the main selection when there is no pick — and inserts it below the caret line. If the caret is inside the block being moved, nothing happens.
 
 ### Link template
 
@@ -88,11 +111,13 @@ Hover a wikilink and press Alt by itself. The plugin opens the link, in Live Pre
 
 ## How it works
 
-The plugin is one hand-written CommonJS file with no build step, and most of its design comes from three constraints.
+The plugin is one hand-written CommonJS file with no build step, and most of its design comes from a handful of constraints.
 
 **Keys must be caught before CodeMirror sees them.** `Alt+M`, `Alt+Enter`, `Alt+D`, the Alt-tap and the Tab behaviours are handled on `window`'s `keydown` in the capture phase, using native listeners rather than `registerDomEvent`. On some Obsidian versions `registerDomEvent` cannot request capture, and then CodeMirror's own Tab handler consumes the key first. Everything that can be a normal editor command — the jumps, the inserts, back and forward — is registered as a command with a default hotkey, so it shows up in Settings → Hotkeys and works with multiple cursors.
 
-**Editor changes go through the editor, not the DOM.** `insertSymbol` calls `editor.replaceSelection` for one caret; for several carets it walks the ranges backwards with `replaceRange` and re-applies each cursor offset, because replacing forwards shifts the positions of the ranges still to be edited. `editor.transaction` exists, but on the versions this plugin targets it does not commit the change synchronously, which breaks the "insert at every caret" sequence. The link template is a small state machine over the link's *current* text rather than a step counter, because the candidate suggester can replace `[[` with a complete `[[Note|Alias]]` in one keystroke; counting steps would then point at the wrong segment.
+**Editor changes go through the editor, not the DOM.** `insertSymbol` calls `editor.replaceSelection` for one caret; for several carets it walks the ranges backwards with `replaceRange` and re-applies each cursor offset, because replacing forwards shifts the positions of the ranges still to be edited. `editor.transaction` exists, but on the versions this plugin targets it does not commit the change synchronously, which breaks the "insert at every caret" sequence; column alignment is the one place it is used, because there is a single change and the single undo step is worth it. The link template is a small state machine over the link's *current* text rather than a step counter, because the candidate suggester can replace `[[` with a complete `[[Note|Alias]]` in one keystroke; counting steps would then point at the wrong segment.
+
+**Alignment and drag selection need their own maths.** `Alt+T` measures every token in display cells (CJK and full-width characters 2, combining marks 0, a tab 4) because JavaScript's `length` counts a Chinese character as one and the columns would drift. The block is written back in a single `editor.transaction`, so one undo restores the original; if the transaction is unavailable, the plugin falls back to `replaceRange`. The Alt-drag and Shift-drag gestures are caught on `window`'s `mousedown` in the capture phase, before CodeMirror resets the selection, and the pointer is converted to a document offset with `cm.posAtCoords`. The ranges go back through `editor.setSelections`, which is what gives the native multi-range highlight.
 
 **IME text is not your text.** `Alt+D` while composing must clear the composition, not the line. The plugin records the composing text from `compositionstart`/`compositionupdate`, blurs the editor to commit or cancel the composition, polls up to six times at 45 ms, and only then removes the characters if the text immediately before the caret still equals what the IME was composing. The check is the point: blind deletion during composition is how plugins eat paragraphs.
 
@@ -102,7 +127,7 @@ The scroll restore for back and forward is a small `Map` from file path to `scro
 
 The shortcuts above are registered as Obsidian commands, so every one of them can be changed in Settings → Hotkeys. Search for `Alt Quick Keys`.
 
-`Alt+M`, `Alt+Enter`, `Alt+D`, the Alt-tap, and the Tab behaviours are handled directly on `keydown`. They cannot be remapped, because they have to run before Obsidian or the IME handles the same key.
+`Alt+T` is a command as well. `Alt+S`, the Alt-tap, the Alt and Shift drags, the double-tap `<` / `>` and the double-tap Alt are handled directly on `keydown` and `mousedown`. They cannot be remapped, because they have to run before Obsidian or the IME handles the same key.
 
 ## Notes
 
@@ -119,17 +144,21 @@ versions.json  minimum Obsidian version per release
 LICENSE        MIT
 ```
 
-There is no build step. `main.js` is hand-written, readable source. The pure helpers used by the keyboard handlers are exported on `AltQuickKeys._pure` — `insertSymbol`, `jumpLine`, `handleCurrentLine`, `extendSelection`, `currentLink`, `advanceLink`, `escapeClosing`, `insertBlankLineBelow` — so they can be tested without an Obsidian instance.
+There is no build step. `main.js` is hand-written, readable source. The pure helpers used by the keyboard handlers are exported on `AltQuickKeys._pure` — `insertSymbol`, `jumpLine`, `handleCurrentLine`, `extendSelection`, `currentLink`, `advanceLink`, `escapeClosing`, `insertBlankLineBelow`, `charWidth`, `displayWidth`, `expandTabs`, `alignText`, `mergeRanges`, `subtractRanges`, `swapLines`, `moveLineBlock`, `selectLine` — so they can be tested without an Obsidian instance.
 
 ## 中文说明
 
-Obsidian 桌面端的 Alt 键速写插件。给常用的 Markdown 符号、行跳转、扩选、双链模板各配一个 Alt 组合键，把「移动鼠标 → 定位 → 打字」压成一次按键。
+Obsidian 桌面端的 Alt 键速写插件。给常用的 Markdown 符号、行跳转、扩选、多行对齐、双链模板各配一个 Alt 组合键，把「移动鼠标 → 定位 → 打字」压成一次按键。
 
 ### 能带来什么
 
 - **手不离主键区**：插 `#`、`*`、`**`，上一行 / 下一行的行首行尾，全部在 Alt 层完成。
 - **按住连跳**：`Alt+K` / `Alt+L` 支持按住不放连续跳行，跨十几行不用连按十几次。
 - **多光标一起改**：插入符号和逐字扩选对所有光标生效，写列表、改表格时不用逐个处理。
+- **多行对齐**：选中几行按 `Alt+T`，按空格切成列、逐列补空格，中文按两格宽算；空行、行首缩进、行尾空白都保持原样。
+- **选区分段**：按住 Alt 拖选把新一段加进选区，按住 Shift 拖选从选区里减掉一段，原生多段高亮直接可用。
+- **尖括号速选**：Alt 双击 `<` 选到文末，双击 `>` 选到行尾，`<` `>` 本身不会落进正文。
+- **整行搬运**：双击 Alt 选中整行，光标移到别处再双击即可对调；`Alt+S` 把整行剪到光标下一行。
 - **双链不用记语法**：`Alt+M` 生成 `[[]]`，Tab 依次补标题、别名，再跳出。选中文字再按，选中的文字直接变成别名。
 - **清行不误删**：`Alt+D` 第一次清空当前行，第二次才删行；输入法正在组字时先清输入法，不会把正文吃掉。
 - **后退不丢位置**：`Alt+-` / `Alt+=` 后退前进之后回到原来的滚动位置，长笔记里不会被打回开头。
@@ -148,6 +177,13 @@ Obsidian 桌面端的 Alt 键速写插件。给常用的 Markdown 符号、行�
 | `Alt+P` | 上一行行尾 |
 | `Alt+,` | 选区向右扩一个字 |
 | `Alt+.` | 选区向右扩一个字 |
+| `Alt+T` | 选中多行按列对齐 |
+| `Alt` + 拖动 | 拖过的文字追加进选区 |
+| `Shift` + 拖动 | 从选区里减掉拖过的文字 |
+| `Alt` + 双击 `<` | 从光标选到文末 |
+| `Alt` + 双击 `>` | 从光标选到行尾 |
+| `Alt`（双击） | 选中整行；再双击与光标行对调 |
+| `Alt+S` | 剪切整行，插到光标行下面 |
 | `Alt+M` | 插入双链模板，Tab 逐步补全 |
 | `Alt+Enter` | 在下方插入空行，光标回行首 |
 | `Alt+D` | 清空当前行；已空则删除该行 |
@@ -158,11 +194,13 @@ Obsidian 桌面端的 Alt 键速写插件。给常用的 Markdown 符号、行�
 
 ### 实现原理
 
-整个插件是一个手写的 CommonJS 文件，没有构建步骤。设计基本由三个限制决定。
+整个插件是一个手写的 CommonJS 文件，没有构建步骤。设计基本由几个限制决定。
 
 **按键必须先于 CodeMirror 被捕获。** `Alt+M`、`Alt+Enter`、`Alt+D`、轻按 Alt、以及 Tab 相关行为都挂在 `window` 的 `keydown` 捕获阶段，用原生监听器而不是 `registerDomEvent`——部分 Obsidian 版本里 `registerDomEvent` 拿不到捕获阶段，Tab 会先被 CodeMirror 吃掉。其余能做成普通命令的键位（跳行、插符号、前进后退）都注册为命令并带默认热键，这样能在「设置 → 快捷键」里改，也天然支持多光标。
 
-**改动通过编辑器 API，不碰 DOM。** 单光标插符号用 `editor.replaceSelection`；多光标则从后往前逐个 `replaceRange` 并修正光标偏移，因为从前往后改会让后面还没处理的区间位置整体漂移。`editor.transaction` 在这个插件支持的版本上不能同步提交，会破坏「每个光标都插入」的顺序，所以没用。双链模板是一个读取链接**当前文本**的小状态机，而不是按 Tab 次数计数：候选补全可能一次按键就把 `[[` 换成完整的 `[[Note|Alias]]`，按步数走会落到错误的分段。
+**改动通过编辑器 API，不碰 DOM。** 单光标插符号用 `editor.replaceSelection`；多光标则从后往前逐个 `replaceRange` 并修正光标偏移，因为从前往后改会让后面还没处理的区间位置整体漂移。`editor.transaction` 在这个插件支持的版本上不能同步提交，会破坏「每个光标都插入」的顺序，所以不用；列对齐是唯一的例外，只有一处改动，用它换单步撤销，失败再退回 `replaceRange`。双链模板是一个读取链接**当前文本**的小状态机，而不是按 Tab 次数计数：候选补全可能一次按键就把 `[[` 换成完整的 `[[Note|Alias]]`，按步数走会落到错误的分段。
+
+**对齐和拖动要自己算。** `Alt+T` 按显示格数计宽：中文和全角字符算 2 格、组合符 0 格、Tab 算 4 格；用 `String.length` 会把一个汉字算成 1，列宽就会歪。整段用一次 `editor.transaction` 写回，撤销一步即回原文；老版本没有 transaction 时退回 `replaceRange`。Alt 拖动和 Shift 拖动在 `window` 的 `mousedown` 捕获阶段接管——CodeMirror 自己的处理会先重置选区，晚一步旧选区就没了——坐标用 `cm.posAtCoords` 换成文档偏移，结果交给 `editor.setSelections`，多段高亮是编辑器原生画的。
 
 **输入法里的字不是你的字。** 组字过程中按 `Alt+D` 要清掉的是输入法内容，不是整行。插件从 `compositionstart`/`compositionupdate` 记录正在组字的文本，先让编辑器失焦提交或取消组字，再以 45 ms 间隔轮询最多六次，只有光标前文本仍然等于输入法内容时才删除。这个校验是关键：组字期间盲删是插件吃掉整段正文的常见原因。
 
@@ -170,7 +208,7 @@ Obsidian 桌面端的 Alt 键速写插件。给常用的 Markdown 符号、行�
 
 ### 热键
 
-上表的键位都注册成了 Obsidian 命令，可在「设置 → 快捷键」里搜索 `Alt Quick Keys` 修改。`Alt+M`、`Alt+Enter`、`Alt+D`、轻按 Alt 和 Tab 行为直接走 `keydown`，不能改键，因为它们必须抢在 Obsidian 或输入法处理同一个键之前。
+上表的键位大多注册成了 Obsidian 命令，可在「设置 → 快捷键」里搜索 `Alt Quick Keys` 修改，`Alt+T` 也在其中。`Alt+S`、轻按 Alt、Alt / Shift 拖动、双击尖括号和双击 Alt 直接走 `keydown` 与 `mousedown`，不能改键，因为它们必须抢在 Obsidian 或输入法处理同一个键之前。
 
 ### 运维说明
 
