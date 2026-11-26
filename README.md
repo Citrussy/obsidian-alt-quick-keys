@@ -23,7 +23,7 @@ Every shortcut works on multiple cursors where it makes sense. Nothing here touc
 
 | Key | Action |
 | --- | --- |
-| `Alt+Q` | Insert `#` |
+| `Alt+Q` | Insert `#`; hold to add one `#` per line |
 | `Alt+W` | Insert `*` |
 | `Alt+E` | Insert `**` |
 | `Alt+K` | Go to the start of the line below |
@@ -54,6 +54,8 @@ Every shortcut works on multiple cursors where it makes sense. Nothing here touc
 - On the last line, `Alt+K` and `Alt+L` add a new line at the end of the document, like Enter.
 - With a selection, a jump starts from the far end in the direction of travel, so a downward jump does not land inside the selected text.
 - `Alt+K` and `Alt+O` land at column 0, before any leading `#`, and `Alt+L` / `Alt+P` land after the last character.
+
+Holding `Alt+Q` is different: after a 360 ms delay it appends a new `#` line every 120 ms, so a longer press builds a longer vertical column. Releasing Q or Alt stops it at once. The first row comes from the normal command; the rest come from the plugin's timer, not the keyboard's own repeat.
 
 ### Extend selection
 
@@ -116,6 +118,8 @@ The plugin is one hand-written CommonJS file with no build step, and most of its
 
 **Editor changes go through the editor, not the DOM.** `insertSymbol` calls `editor.replaceSelection` for one caret; for several carets it walks the ranges backwards with `replaceRange` and re-applies each cursor offset, because replacing forwards shifts the positions of the ranges still to be edited. `editor.transaction` exists, but on the versions this plugin targets it does not commit the change synchronously, which breaks the "insert at every caret" sequence; column alignment is the one place it is used, because there is a single change and the single undo step is worth it. The link template is a small state machine over the link's *current* text rather than a step counter, because the candidate suggester can replace `[[` with a complete `[[Note|Alias]]` in one keystroke; counting steps would then point at the wrong segment.
 
+**A held `Alt+Q` is a timer, not key repeat.** The first `#` comes from the normal command. After 360 ms a recursive 120 ms timer appends a newline and a `#`, ignores the OS repeat keydowns, and scrolls the caret into view. Releasing Q or Alt, switching notes, or losing focus clears the timer.
+
 **Alignment and drag selection need their own maths.** `Alt+T` measures every token in display cells (CJK and full-width characters 2, combining marks 0, a tab 4) because JavaScript's `length` counts a Chinese character as one and the columns would drift. The block is written back in a single `editor.transaction`, so one undo restores the original; if the transaction is unavailable, the plugin falls back to `replaceRange`. The Alt-drag and Shift-drag gestures are caught on `window`'s `mousedown` in the capture phase, before CodeMirror resets the selection, and the pointer is converted to a document offset with `cm.posAtCoords`. The ranges go back through `editor.setSelections`, with the freshly dragged range as the main selection so the browser paints it and CodeMirror paints the older ones. A body class is set only while two or more real ranges exist: it gives both layers the same background and lifts the dimming that a companion caret animation applies to the secondary caret.
 
 **IME text is not your text.** `Alt+D` while composing must clear the composition, not the line. The plugin records the composing text from `compositionstart`/`compositionupdate`, blurs the editor to commit or cancel the composition, polls up to six times at 45 ms, and only then removes the characters if the text immediately before the caret still equals what the IME was composing. The check is the point: blind deletion during composition is how plugins eat paragraphs.
@@ -126,7 +130,7 @@ The scroll restore for back and forward is a small `Map` from file path to `scro
 
 The shortcuts above are registered as Obsidian commands, so every one of them can be changed in Settings → Hotkeys. Search for `Alt Quick Keys`.
 
-`Alt+T` is a command as well. `Alt+S`, the Alt-tap, the Alt and Shift drags, and the double-tap `,` / `.` are handled directly on `keydown` and `mousedown`. They cannot be remapped, because they have to run before Obsidian or the IME handles the same key.
+`Alt+T` is a command as well. `Alt+S`, the Alt-tap, the Alt and Shift drags, and the double-tap `,` / `.` are handled directly on `keydown` and `mousedown`. They cannot be remapped, because they have to run before Obsidian or the IME handles the same key. A held `Alt+Q` starts with the command, then a timer adds the remaining rows.
 
 ## Notes
 
@@ -153,6 +157,7 @@ Obsidian 桌面端的 Alt 键速写插件。给常用的 Markdown 符号、行�
 
 - **手不离主键区**：插 `#`、`*`、`**`，上一行 / 下一行的行首行尾，全部在 Alt 层完成。
 - **按住连跳**：`Alt+K` / `Alt+L` 支持按住不放连续跳行，跨十几行不用连按十几次。
+- **长按补列**：按住 `Alt+Q` 不松，360ms 后每 120ms 向下补一行 `#`，按得越久列越长；松开 Q 或 Alt 立即停止。
 - **多光标一起改**：插入符号和逐字扩选对所有光标生效，写列表、改表格时不用逐个处理。
 - **多行对齐**：选中几行按 `Alt+T`，按空格切成列、逐列补空格，中文按两格宽算；空行、行首缩进保持原样，最后一列不补尾随空格。
 - **选区分段**：按住 Alt 拖选把新一段加进选区，按住 Shift 拖选从选区里减掉一段；新拖的一段用主选区高亮，旧段由编辑器补画，颜色统一。
@@ -167,7 +172,7 @@ Obsidian 桌面端的 Alt 键速写插件。给常用的 Markdown 符号、行�
 
 | 按键 | 作用 |
 | --- | --- |
-| `Alt+Q` | 插入 `#` |
+| `Alt+Q` | 插入 `#`；按住连续补 `#` 行 |
 | `Alt+W` | 插入 `*` |
 | `Alt+E` | 插入 `**` |
 | `Alt+K` | 下一行行首 |
@@ -198,6 +203,8 @@ Obsidian 桌面端的 Alt 键速写插件。给常用的 Markdown 符号、行�
 
 **改动通过编辑器 API，不碰 DOM。** 单光标插符号用 `editor.replaceSelection`；多光标则从后往前逐个 `replaceRange` 并修正光标偏移，因为从前往后改会让后面还没处理的区间位置整体漂移。`editor.transaction` 在这个插件支持的版本上不能同步提交，会破坏「每个光标都插入」的顺序，所以不用；列对齐是唯一的例外，只有一处改动，用它换单步撤销，失败再退回 `replaceRange`。双链模板是一个读取链接**当前文本**的小状态机，而不是按 Tab 次数计数：候选补全可能一次按键就把 `[[` 换成完整的 `[[Note|Alias]]`，按步数走会落到错误的分段。
 
+**长按 `Alt+Q` 是定时器，不是键盘连发。** 第一个 `#` 由命令插入；360ms 后递归定时器每 120ms 追加一行 `#`，忽略系统的重复 keydown，并把光标滚进可视区。松开 Q 或 Alt、切换笔记、窗口失焦都会清掉定时器。
+
 **对齐和拖动要自己算。** `Alt+T` 按显示格数计宽：中文和全角字符算 2 格、组合符 0 格、Tab 算 4 格；用 `String.length` 会把一个汉字算成 1，列宽就会歪。整段用一次 `editor.transaction` 写回，撤销一步即回原文；老版本没有 transaction 时退回 `replaceRange`。Alt 拖动和 Shift 拖动在 `window` 的 `mousedown` 捕获阶段接管——CodeMirror 自己的处理会先重置选区，晚一步旧选区就没了——坐标用 `cm.posAtCoords` 换成文档偏移，结果交给 `editor.setSelections`：新拖的一段作为主选区交给浏览器原生高亮，旧段由 CodeMirror 补画；只有存在两段以上真实选区时，插件才在 `body` 上加类，把两层底色统一，并去掉伴随光标插件对次光标的减淡。
 
 **输入法里的字不是你的字。** 组字过程中按 `Alt+D` 要清掉的是输入法内容，不是整行。插件从 `compositionstart`/`compositionupdate` 记录正在组字的文本，先让编辑器失焦提交或取消组字，再以 45 ms 间隔轮询最多六次，只有光标前文本仍然等于输入法内容时才删除。这个校验是关键：组字期间盲删是插件吃掉整段正文的常见原因。
@@ -206,7 +213,7 @@ Obsidian 桌面端的 Alt 键速写插件。给常用的 Markdown 符号、行�
 
 ### 热键
 
-上表的键位大多注册成了 Obsidian 命令，可在「设置 → 快捷键」里搜索 `Alt Quick Keys` 修改，`Alt+T` 也在其中。`Alt+S`、轻按 Alt、Alt / Shift 拖动、双击逗号和句号直接走 `keydown` 与 `mousedown`，不能改键，因为它们必须抢在 Obsidian 或输入法处理同一个键之前。
+上表的键位大多注册成了 Obsidian 命令，可在「设置 → 快捷键」里搜索 `Alt Quick Keys` 修改，`Alt+T` 也在其中。`Alt+S`、轻按 Alt、Alt / Shift 拖动、双击逗号和句号直接走 `keydown` 与 `mousedown`，不能改键，因为它们必须抢在 Obsidian 或输入法处理同一个键之前。长按 `Alt+Q` 的首行由命令插入，其余行由定时器补。
 
 ### 运维说明
 

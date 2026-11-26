@@ -18,6 +18,10 @@ const ACTIONS = {
   p: { name: '跳到上一行行尾', type: 'line', delta: -1, where: 'end' },
 };
 
+/** Alt+Q 按住后开始补行的延迟与每行间隔（毫秒） */
+const HASH_HOLD_DELAY = 360;
+const HASH_HOLD_INTERVAL = 120;
+
 /** 把 anchor/head 排成前→后 */
 function toRange(sel) {
   const a = sel.anchor;
@@ -663,6 +667,8 @@ class AltQuickKeys extends Plugin {
     this.lastPick = null;
     // Alt+, / Alt+. 的连按记录
     this.angleTap = null;
+    // Alt+Q 按住后补 # 列的计时器
+    this.hashHold = null;
 
     // 多段选区由 Obsidian 画主选区、CodeMirror 画其余选区；统一底色，
     // 并把 cursor-smooth-jump 压暗的次光标提亮
@@ -748,6 +754,7 @@ class AltQuickKeys extends Plugin {
     document.addEventListener('selectionchange', onSelectionChange);
     const onBlur = () => {
       this.drag = null; // 焦点被系统抢走时松手事件收不到，别让拖动状态挂着
+      this.finishHashHold();
     };
     window.addEventListener('blur', onBlur, true);
     window.addEventListener('selectstart', onSelectStart, true);
@@ -780,11 +787,13 @@ class AltQuickKeys extends Plugin {
     this.registerEvent(
       this.app.workspace.on('active-leaf-change', () => {
         this.lastPick = null;
+        this.finishHashHold();
       })
     );
   }
 
   onunload() {
+    this.finishHashHold();
     this.composition = null;
     this.pending = null;
     this.linkSession = false;
@@ -883,6 +892,9 @@ class AltQuickKeys extends Plugin {
 
   /** 松开 Alt：单击且鼠标停在双链上时跳过去 */
   onKeyUp(ev) {
+    if (this.hashHold && (ev.key === 'q' || ev.code === 'KeyQ' || ev.key === 'Alt')) {
+      this.finishHashHold();
+    }
     if (ev.key !== 'Alt') return;
     const tap = this.altTap;
     this.altTap = null;
@@ -890,6 +902,43 @@ class AltQuickKeys extends Plugin {
     if (Date.now() - tap.at > 800) return;
     if (!this.linkAtPointer()) return;
     this.jumpToHovered();
+  }
+
+  /**
+   * Alt+Q 按住：命令先插第一个 #；360ms 后每 120ms 补一行，按得越久列越长。
+   * 松开 Q 或 Alt 会取消；按住期间不响应系统的重复 keydown，避免刷得太快。
+   */
+  startHashHold(editor) {
+    this.finishHashHold();
+    const hold = { editor, timer: 0 };
+    const tick = () => {
+      if (this.hashHold !== hold) return;
+      if (this.activeEditor() !== editor) {
+        this.finishHashHold();
+        return;
+      }
+      try {
+        editor.replaceSelection('\n#');
+      } catch (err) {
+        this.finishHashHold();
+        return;
+      }
+      try {
+        const cursor = editor.getCursor();
+        editor.scrollIntoView({ from: cursor, to: cursor });
+      } catch (err) {
+        // 滚动失败不能终止整列输出
+      }
+      hold.timer = window.setTimeout(tick, HASH_HOLD_INTERVAL);
+    };
+    hold.timer = window.setTimeout(tick, HASH_HOLD_DELAY);
+    this.hashHold = hold;
+  }
+
+  finishHashHold() {
+    if (!this.hashHold) return;
+    window.clearTimeout(this.hashHold.timer);
+    this.hashHold = null;
   }
 
   /** 选区变化后同步多段高亮状态；没有编辑器时清掉 */
@@ -1263,6 +1312,8 @@ class AltQuickKeys extends Plugin {
   onKeyDown(ev) {
     const isComma = ev.key === ',' || ev.code === 'Comma';
     const isPeriod = ev.key === '.' || ev.code === 'Period';
+    const isQ = ev.key === 'q' || ev.code === 'KeyQ';
+    if (this.hashHold && !isQ) this.finishHashHold();
     // 中间按了别的键，逗号/句号的连按作废
     if (!isComma && !isPeriod) this.angleTap = null;
     else if (!ev.altKey || ev.ctrlKey || ev.metaKey || ev.shiftKey) this.angleTap = null;
@@ -1311,6 +1362,19 @@ class AltQuickKeys extends Plugin {
         // 之前或之后执行，自己再扩一次就会变成一次按键走两格。
         this.angleTap = { edge, at: now };
       }
+      return;
+    }
+
+    // Alt+Q 长按：第一下交给命令插 #，按住后每 120ms 再补一行
+    if (ev.altKey && !ev.ctrlKey && !ev.metaKey && !ev.shiftKey && isQ) {
+      if (this.altTap) this.altTap.combo = true;
+      if (ev.repeat) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        return;
+      }
+      const editor = this.editorForKey();
+      if (editor) this.startHashHold(editor);
       return;
     }
 
