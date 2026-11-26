@@ -524,28 +524,34 @@ function replaceLineSpan(editor, fromLine, toLine, lines) {
   );
 }
 
-/** 选中整行（不含换行符） */
-function selectLine(editor, line) {
-  const range = { from: { line, ch: 0 }, to: { line, ch: editor.getLine(line).length } };
-  editor.setSelection(range.from, range.to);
-  try {
-    editor.scrollIntoView(range, true);
-  } catch (e) {
-    /* ignore */
-  }
+/** 两段以上真实选区时，cursor-smooth-jump 的次光标不再压暗；多光标仍保持原样 */
+function markMultiSelection(list) {
+  if (typeof document === 'undefined') return;
+  const real = list.filter((range) => range.anchor.line !== range.head.line || range.anchor.ch !== range.head.ch).length;
+  document.body.classList.toggle('altqk-multisel', real > 1);
 }
 
-/** 对调两行，中间的行原样带过去 */
-function swapLines(editor, lineA, lineB) {
-  if (lineA === lineB) return false;
-  const last = editor.lastLine();
-  if (lineA < 0 || lineB < 0 || lineA > last || lineB > last) return false;
-  const from = Math.min(lineA, lineB);
-  const to = Math.max(lineA, lineB);
-  const middle = [];
-  for (let i = from + 1; i < to; i += 1) middle.push(editor.getLine(i));
-  replaceLineSpan(editor, from, to, [editor.getLine(to), ...middle, editor.getLine(from)]);
-  return true;
+/** 用 CodeMirror 的选区对象写回，并指定主选区；Obsidian 的 setSelections 会忽略主选区参数 */
+function applySelections(editor, ranges, mainIndex) {
+  const list = ranges.map((range) => ({ anchor: range.from, head: range.to }));
+  if (!list.length) return;
+  markMultiSelection(list);
+
+  const cm = editor.cm;
+  const Selection = cm && cm.state && cm.state.selection && cm.state.selection.constructor;
+  if (Selection && typeof Selection.create === 'function' && typeof Selection.range === 'function') {
+    try {
+      const cmRanges = list.map((range) =>
+        Selection.range(editor.posToOffset(range.anchor), editor.posToOffset(range.head))
+      );
+      const index = Math.max(0, Math.min(mainIndex == null ? 0 : mainIndex, cmRanges.length - 1));
+      cm.dispatch({ selection: Selection.create(cmRanges, index) });
+      return;
+    } catch (e) {
+      /* 老版本没有 dispatch 时退回 Editor API */
+    }
+  }
+  editor.setSelections(list);
 }
 
 /**
@@ -653,14 +659,26 @@ class AltQuickKeys extends Plugin {
     this.altTap = null;
     this.pointer = null;
 
-    // 双击 Alt 记下的「整行」；Alt+S 搬它，再双击 Alt 拿它和当前行对调
-    this.linePick = null;
-    // 上一次干净的 Alt 抬起时间，用来判双击 Alt
-    this.lastCleanAltUp = 0;
-    // 延迟执行的链接跳转（给双击 Alt 留判定窗口）
-    this.pendingJump = 0;
-    // Alt+< / Alt+> 的连按记录
+    // 上一次非空选区：光标移走/选区塌掉后，Alt+S 仍能搬这一行
+    this.lastPick = null;
+    // Alt+, / Alt+. 的连按记录
     this.angleTap = null;
+
+    // 多段选区由 Obsidian 画主选区、CodeMirror 画其余选区；统一底色，
+    // 并把 cursor-smooth-jump 压暗的次光标提亮
+    this.styleEl = document.createElement('style');
+    this.styleEl.id = 'alt-quick-keys-style';
+    this.styleEl.textContent = [
+      '.altqk-on .cm-selectionBackground { background-color: var(--text-selection, rgba(59, 118, 113, 0.376)) !important; }',
+      '.altqk-multisel .cj-caret-secondary { filter: none !important; opacity: 1 !important; }',
+    ].join('\n');
+    document.head.appendChild(this.styleEl);
+    document.body.classList.add('altqk-on');
+    this.register(() => {
+      document.body.classList.remove('altqk-on');
+      document.body.classList.remove('altqk-multisel');
+      if (this.styleEl) this.styleEl.remove();
+    });
     // Alt/Shift 拖动状态
     this.drag = null;
     this.suppressClickUntil = 0;
@@ -720,9 +738,14 @@ class AltQuickKeys extends Plugin {
     const onSelectStart = (ev) => {
       if (this.drag) ev.preventDefault();
     };
+    const onSelectionChange = () => {
+      this.rememberSelection();
+      this.syncMultiSelection();
+    };
     window.addEventListener('mousedown', onMouseDown, true);
     window.addEventListener('mouseup', onMouseUp, true);
     window.addEventListener('click', onClick, true);
+    document.addEventListener('selectionchange', onSelectionChange);
     const onBlur = () => {
       this.drag = null; // 焦点被系统抢走时松手事件收不到，别让拖动状态挂着
     };
@@ -732,23 +755,31 @@ class AltQuickKeys extends Plugin {
       window.removeEventListener('mousedown', onMouseDown, true);
       window.removeEventListener('mouseup', onMouseUp, true);
       window.removeEventListener('click', onClick, true);
+      document.removeEventListener('selectionchange', onSelectionChange);
       window.removeEventListener('selectstart', onSelectStart, true);
       window.removeEventListener('blur', onBlur, true);
     });
 
-    // 记下的整行被编辑过就作废，免得 Alt+S / 双击 Alt 拿旧行号去搬现在的行
+    // 记下的整行被编辑过就作废，免得 Alt+S 拿旧行号去搬现在的行
     this.registerEvent(
       this.app.workspace.on('editor-change', (editor) => {
-        const pick = this.linePick;
+        const pick = this.lastPick;
         if (!pick) return;
-        if (pick.line > editor.lastLine() || editor.getLine(pick.line) !== pick.text) {
-          this.linePick = null;
+        if (pick.toLine > editor.lastLine()) {
+          this.lastPick = null;
+          return;
+        }
+        for (let i = pick.fromLine; i <= pick.toLine; i += 1) {
+          if (editor.getLine(i) !== pick.lines[i - pick.fromLine]) {
+            this.lastPick = null;
+            return;
+          }
         }
       })
     );
     this.registerEvent(
       this.app.workspace.on('active-leaf-change', () => {
-        this.linePick = null;
+        this.lastPick = null;
       })
     );
   }
@@ -758,10 +789,30 @@ class AltQuickKeys extends Plugin {
     this.pending = null;
     this.linkSession = false;
     this.altTap = null;
-    this.linePick = null;
+    this.lastPick = null;
     this.drag = null;
-    if (this.pendingJump) window.clearTimeout(this.pendingJump);
-    this.pendingJump = 0;
+    document.body.classList.remove('altqk-on');
+    if (this.styleEl) this.styleEl.remove();
+  }
+
+  /** 记下最近一次非空选区；Alt+S 在选区塌掉后还能搬它 */
+  rememberSelection() {
+    if (this.drag) return;
+    const editor = this.activeEditor();
+    if (!editor) return;
+
+    const sel = editor.listSelections().find((item) => {
+      const range = toRange(item);
+      return range.from.line !== range.to.line || range.from.ch !== range.to.ch;
+    });
+    if (!sel) return;
+
+    const range = toRange(sel);
+    let toLine = range.to.line;
+    if (toLine > range.from.line && range.to.ch === 0) toLine -= 1;
+    const lines = [];
+    for (let i = range.from.line; i <= toLine; i += 1) lines.push(editor.getLine(i));
+    this.lastPick = { fromLine: range.from.line, toLine, lines };
   }
 
   /** 只记坐标，解析留到真要跳转时再做 */
@@ -830,83 +881,69 @@ class AltQuickKeys extends Plugin {
     return true;
   }
 
-  /** 松开 Alt：单击 → 跳悬停链接（延迟，给双击让路）；连按两下 → 选整行 / 对调 */
+  /** 松开 Alt：单击且鼠标停在双链上时跳过去 */
   onKeyUp(ev) {
     if (ev.key !== 'Alt') return;
     const tap = this.altTap;
     this.altTap = null;
-    if (!tap) return;
-    if (tap.combo || tap.done) return;
-
-    const now = Date.now();
-    if (now - tap.at > 800) return;
-
-    // 两次干净的 Alt 之间没别的键、间隔够短：算双击 Alt
-    if (this.lastCleanAltUp && now - this.lastCleanAltUp <= 320) {
-      this.lastCleanAltUp = 0;
-      if (this.pendingJump) {
-        window.clearTimeout(this.pendingJump);
-        this.pendingJump = 0;
-      }
-      this.doubleAlt();
-      ev.preventDefault();
-      return;
-    }
-    this.lastCleanAltUp = now;
-
-    // 悬停在双链上才需要跳；推迟到双击判定窗口结束再跳，
-    // 否则第一下 Alt 就跳走，第二下永远等不到
+    if (!tap || tap.combo || tap.done) return;
+    if (Date.now() - tap.at > 800) return;
     if (!this.linkAtPointer()) return;
-    this.pendingJump = window.setTimeout(() => {
-      this.pendingJump = 0;
-      this.jumpToHovered();
-    }, 330);
+    this.jumpToHovered();
   }
 
-  /**
-   * 双击 Alt：记下光标所在整行并选中。
-   * 已经记过另外一行、那行内容没变 → 把两行对调，选中换过来的那行。
-   */
-  doubleAlt() {
-    const editor = this.editorForKey() || this.activeEditor();
-    if (!editor) return;
-    const head = editor.getCursor('head');
-    const pick = this.linePick;
-
-    if (
-      pick &&
-      pick.line !== head.line &&
-      pick.line <= editor.lastLine() &&
-      editor.getLine(pick.line) === pick.text
-    ) {
-      swapLines(editor, pick.line, head.line);
-      this.linePick = { line: head.line, text: editor.getLine(head.line) };
-      selectLine(editor, head.line);
+  /** 选区变化后同步多段高亮状态；没有编辑器时清掉 */
+  syncMultiSelection() {
+    if (typeof document === 'undefined') return;
+    const editor = this.activeEditor();
+    if (!editor) {
+      document.body.classList.remove('altqk-multisel');
       return;
     }
-
-    this.linePick = { line: head.line, text: editor.getLine(head.line) };
-    selectLine(editor, head.line);
+    markMultiSelection(
+      editor.listSelections().map((range) => ({ anchor: range.anchor, head: range.head }))
+    );
   }
 
-  /** Alt+S：把记下的整行（或当前整行选区）剪切，插到光标所在行的下一行 */
+  /** 取 Alt+S 要搬的整行范围：当前主选区 → 最近记下的选区 → 任意非空段 → 当前行 */
+  lineRangeForMove(editor, head) {
+    const nonEmpty = (range) =>
+      range && (range.from.line !== range.to.line || range.from.ch !== range.to.ch);
+
+    const main = editor.listSelections()[0];
+    const mainRange = main ? toRange(main) : null;
+    if (nonEmpty(mainRange)) return mainRange;
+
+    const pick = this.lastPick;
+    if (pick && pick.toLine <= editor.lastLine()) {
+      const same = pick.lines.every(
+        (text, i) => editor.getLine(pick.fromLine + i) === text
+      );
+      if (same) {
+        return {
+          from: { line: pick.fromLine, ch: 0 },
+          to: { line: pick.toLine, ch: editor.getLine(pick.toLine).length },
+        };
+      }
+    }
+
+    const any = editor.listSelections().map(toRange).find(nonEmpty);
+    if (any) return any;
+
+    return {
+      from: { line: head.line, ch: 0 },
+      to: { line: head.line, ch: editor.getLine(head.line).length },
+    };
+  }
+
+  /** Alt+S：把选中的整行（或最近选过的那行）剪切，插到光标所在行的下一行 */
   cutLineToBelow(editor) {
     const head = editor.getCursor('head');
-    const pick = this.linePick;
-    let from;
-    let to;
-
-    if (pick && pick.line <= editor.lastLine() && editor.getLine(pick.line) === pick.text) {
-      from = pick.line;
-      to = pick.line;
-    } else {
-      const sel = editor.listSelections()[0];
-      const range = sel ? toRange(sel) : { from: head, to: head };
-      from = range.from.line;
-      to = range.to.line;
-      // 选区终点正好在下一行行首时，那一行不算被选中
-      if (to > from && range.to.ch === 0) to -= 1;
-    }
+    const source = this.lineRangeForMove(editor, head);
+    let from = source.from.line;
+    let to = source.to.line;
+    // 选区终点正好在下一行行首时，那一行不算被选中
+    if (to > from && source.to.ch === 0) to -= 1;
 
     // 目的地就在源块里：原地不动
     if (head.line >= from && head.line <= to) return;
@@ -915,11 +952,19 @@ class AltQuickKeys extends Plugin {
     if (start == null) return;
 
     const endLine = start + (to - from);
-    const range = { from: { line: start, ch: 0 }, to: { line: endLine, ch: editor.getLine(endLine).length } };
-    this.linePick = { line: start, text: editor.getLine(start) };
-    editor.setSelection(range.from, range.to);
+    const range = {
+      from: { line: start, ch: 0 },
+      to: { line: endLine, ch: editor.getLine(endLine).length },
+    };
+    applySelections(editor, [range], 0);
+
+    const lines = [];
+    for (let i = start; i <= endLine; i += 1) lines.push(editor.getLine(i));
+    this.lastPick = { fromLine: start, toLine: endLine, lines };
+
+    // 只保证移动后的块可见，不用 true 居中，避免整屏跳动
     try {
-      editor.scrollIntoView(range, true);
+      editor.scrollIntoView(range);
     } catch (e) {
       /* ignore */
     }
@@ -953,22 +998,17 @@ class AltQuickKeys extends Plugin {
     editor.setSelection(from, { line: from.line + lines.length - 1, ch: lines[lines.length - 1].length });
   }
 
-  /** Alt+双击 < 选到文末，Alt+双击 > 选到行尾 */
-  selectAngle(editor, key) {
+  /** Alt+双击 , 选到当前行行首；Alt+双击 . 选到当前行行尾 */
+  selectToEdge(editor, edge) {
     const head = editor.getCursor('head');
-    let end;
-    if (key === '<') {
-      const last = editor.lastLine();
-      end = { line: last, ch: editor.getLine(last).length };
-    } else {
-      end = { line: head.line, ch: editor.getLine(head.line).length };
-    }
-    editor.setSelection(head, end);
-    try {
-      editor.scrollIntoView({ from: head, to: end }, true);
-    } catch (e) {
-      /* ignore */
-    }
+    const anchor = editor.getCursor('anchor');
+    const line = head.line;
+    const keep = anchor.line === line ? anchor : head;
+    const end =
+      edge === 'start'
+        ? { line, ch: 0 }
+        : { line, ch: editor.getLine(line).length };
+    editor.setSelection(keep, end);
   }
 
   /**
@@ -1031,6 +1071,16 @@ class AltQuickKeys extends Plugin {
     return Math.max(0, Math.min(length, offset));
   }
 
+  /** 找到包含某个偏移的选区，用作主选区；找不到就回到第一段 */
+  rangeIndexAt(editor, ranges, offset) {
+    const index = ranges.findIndex((range) => {
+      const from = editor.posToOffset(range.from);
+      const to = editor.posToOffset(range.to);
+      return offset >= from && offset <= to;
+    });
+    return index < 0 ? 0 : index;
+  }
+
   /** 拖动中：实时算并集/差集写回多段选区；靠近上下边缘时顺手滚一点 */
   dragMove(ev) {
     const drag = this.drag;
@@ -1060,11 +1110,12 @@ class AltQuickKeys extends Plugin {
         ev.preventDefault();
         return;
       }
-      drag.editor.setSelections(ranges.map((r) => ({ anchor: r.from, head: r.to })));
+      applySelections(drag.editor, ranges, this.rangeIndexAt(drag.editor, ranges, drag.last));
     } else {
       const ranges = mergeRanges(drag.editor, [...drag.base, dragged]);
       if (!ranges.length) return; // 还没拖出长度，先不动选区
-      drag.editor.setSelections(ranges.map((r) => ({ anchor: r.from, head: r.to })));
+      // 拖动端点所在的那段设为主选区，让它用原生高亮；旧选区交给 CM 画
+      applySelections(drag.editor, ranges, this.rangeIndexAt(drag.editor, ranges, offset));
     }
     ev.preventDefault();
   }
@@ -1079,9 +1130,24 @@ class AltQuickKeys extends Plugin {
     this.suppressClickUntil = Date.now() + 120;
 
     if (!drag.moved && !drag.subtract) {
-      // Alt + 单击没拖动：当普通点击处理；Shift 那一下没拖就保留原选区不破坏
+      // Alt + 单击没拖动：点在旧选区外就追加一个空光标，旧选区保留；
+      // 点在旧选区里则照普通点击把选区收成一个光标。
       const pos = drag.editor.offsetToPos(drag.last);
-      drag.editor.setSelection(pos, pos);
+      const inside = drag.base.some((range) => {
+        return (
+          drag.last >= drag.editor.posToOffset(range.from) &&
+          drag.last <= drag.editor.posToOffset(range.to)
+        );
+      });
+      if (drag.base.length && !inside) {
+        const addition = { from: pos, to: pos };
+        const ranges = [...drag.base, addition].sort(
+          (a, b) => drag.editor.posToOffset(a.from) - drag.editor.posToOffset(b.from)
+        );
+        applySelections(drag.editor, ranges, ranges.indexOf(addition));
+      } else {
+        drag.editor.setSelection(pos, pos);
+      }
     }
     try {
       drag.editor.focus();
@@ -1195,13 +1261,11 @@ class AltQuickKeys extends Plugin {
   }
 
   onKeyDown(ev) {
-    // 任何键按下都取消还没执行的链接跳转，免得打字打到一半界面跳走
-    if (this.pendingJump) {
-      window.clearTimeout(this.pendingJump);
-      this.pendingJump = 0;
-    }
-    if (ev.key !== 'Alt') this.lastCleanAltUp = 0; // 中间按了别的键，双击 Alt 作废
-    if (ev.key !== '<' && ev.key !== '>') this.angleTap = null;
+    const isComma = ev.key === ',' || ev.code === 'Comma';
+    const isPeriod = ev.key === '.' || ev.code === 'Period';
+    // 中间按了别的键，逗号/句号的连按作废
+    if (!isComma && !isPeriod) this.angleTap = null;
+    else if (!ev.altKey || ev.ctrlKey || ev.metaKey || ev.shiftKey) this.angleTap = null;
 
     // 单独按下的 Alt：先记一笔，松手时再决定要不要跳转
     if (ev.key === 'Alt') {
@@ -1220,22 +1284,32 @@ class AltQuickKeys extends Plugin {
       }
       return;
     }
-    // Alt + 连按两下 < / >：从光标选到文末 / 行尾。
-    // 尖括号常要配 Shift，所以这里不看 shiftKey；第一次按下就要吞字符，
-    // 否则 < 先落进正文，第二次按下时选区已经被改过。
-    if (ev.altKey && !ev.ctrlKey && !ev.metaKey && (ev.key === '<' || ev.key === '>')) {
+    // Alt + 连按两下 , / .：选到行首 / 行尾。
+    // 第一次按下照旧逐字扩选；同键 400ms 内的第二次改成贴边。
+    // 必须自己拦截：Obsidian 已把 Alt+, / Alt+. 绑成逐字扩选命令，
+    // 放行的话第二次按键前选区已经被命令改过。
+    if (ev.altKey && !ev.ctrlKey && !ev.metaKey && !ev.shiftKey && (isComma || isPeriod)) {
       const editor = this.editorForKey();
       if (!editor) return;
       ev.preventDefault();
       ev.stopPropagation();
-      if (this.altTap) this.altTap.combo = true; // 配了尖括号，不算轻按 Alt
+      if (this.altTap) this.altTap.combo = true; // 配了逗号/句号，不算轻按 Alt
+
+      const edge = isComma ? 'start' : 'end';
+      if (ev.repeat) {
+        this.angleTap = null;
+        return;
+      }
+
       const now = Date.now();
       const first = this.angleTap;
-      if (first && first.key === ev.key && now - first.at <= 400) {
+      if (first && first.edge === edge && now - first.at <= 400) {
         this.angleTap = null;
-        this.selectAngle(editor, ev.key);
+        this.selectToEdge(editor, edge);
       } else {
-        this.angleTap = { key: ev.key, at: now };
+        // 单击那一步交给已注册的 Alt+, / Alt+. 命令：Obsidian 的命令热键可能在本监听器
+        // 之前或之后执行，自己再扩一次就会变成一次按键走两格。
+        this.angleTap = { edge, at: now };
       }
       return;
     }
@@ -1418,9 +1492,7 @@ AltQuickKeys._pure = {
   alignText,
   mergeRanges,
   subtractRanges,
-  swapLines,
   moveLineBlock,
-  selectLine,
 };
 
 module.exports = AltQuickKeys;

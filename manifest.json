@@ -1,7 +1,7 @@
 {
   "id": "alt-quick-keys",
   "name": "Alt Quick Keys",
-  "version": "1.6.0",
+  "version": "1.6.1",
   "minAppVersion": "1.4.0",
   "description": "Alt-key shortcuts to insert markup, jump between lines, extend or split a selection, align lines into columns, move whole lines, fill in wikilinks with Tab, and go back or forward without losing the scroll position.",
   "author": "Citrussy",
